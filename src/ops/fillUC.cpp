@@ -22,6 +22,7 @@ GNU General Public License for more details.
 #include <openbabel/math/spacegroup.h>
 #include <openbabel/generic.h>
 #include <openbabel/obconversion.h>
+#include <list>
 #include <map>
 #include <vector>
 #include <iostream>
@@ -124,6 +125,15 @@ bool OpFillUC::Do(OBBase* pOb, const char* OptionText, OpMap* pOptions, OBConver
   FOR_ATOMS_OF_MOL(atom, *pmol)
       vatoms[&(*atom)]=std::vector<vector3>();
 
+  std::map<OBAtom*,std::list<OBAtom*> > newatoms;// keep track of all atoms generated, to add bonds later
+  FOR_ATOMS_OF_MOL(atom, *pmol)
+    newatoms[&(*atom)].push_back(&(*atom));
+
+  // keep original list of bonds and lengths
+  std::map<OBBond*,double> bonds;
+  FOR_BONDS_OF_MOL(bond, *pmol)
+    bonds[&(*bond)]=bond->GetLength();
+
   for(std::map<OBAtom*,std::vector<vector3> >:: iterator atom=vatoms.begin();
       atom!=vatoms.end();++atom){
     vector3 orig = atom->first->GetVector();
@@ -167,6 +177,7 @@ bool OpFillUC::Do(OBBase* pOb, const char* OptionText, OpMap* pOptions, OBConver
           OBAtom *newAtom = pmol->NewAtom();
           newAtom->Duplicate(atom->first);
           newAtom->SetVector( pUC->FractionalToCartesian(atom->second[i]));
+          newatoms[atom->first].push_back(&(*newAtom));
         }
       }
     }
@@ -192,10 +203,35 @@ bool OpFillUC::Do(OBBase* pOb, const char* OptionText, OpMap* pOptions, OBConver
           OBAtom *newAtom = pmol->NewAtom();
           newAtom->Duplicate(atom->first);
           newAtom->SetVector( pUC->FractionalToCartesian(atom->second[i]));
+          newatoms[atom->first].push_back(&(*newAtom));
         }
       }
     }
   }
+
+  // Generate bonds from existing ones
+  double EPS=1e-3;
+  std::map<OBBond*,double>::iterator b;
+  for (b = bonds.begin(); b != bonds.end(); ++b) {
+    OBAtom *a1=b->first->GetBeginAtom();
+    OBAtom *a2=b->first->GetEndAtom();
+    const double l=b->second;
+    if(a1->GetIdx()<a2->GetIdx()) continue;
+    vector3 v1,v;
+    for(std::list<OBAtom*>::iterator b1=newatoms[a1].begin();b1!=newatoms[a1].end();b1++){
+      v1=(*b1)->GetVector();
+      for(std::list<OBAtom*>::iterator b2=newatoms[a2].begin();b2!=newatoms[a2].end();b2++){
+        if(pmol->GetBond(*b1, *b2)!=NULL)
+          continue;//bond already exists
+        double l2=(v1-(*b2)->GetVector()).length();
+        if(fabs(l2-l)<EPS)
+          pmol->AddBond((*b1)->GetIdx(),(*b2)->GetIdx(),b->first->GetBondOrder(),b->first->GetFlags());
+      }
+    }
+  }
+  // Remove original bonds for which the length has changed
+  for (b = bonds.begin(); b != bonds.end(); ++b)
+    if(fabs(b->first->GetLength()-b->second)>EPS) pmol->DeleteBond(b->first);
 
   // Set spacegroup to P1, since we generated all symmetrics
   pUC->SetSpaceGroup("P1");

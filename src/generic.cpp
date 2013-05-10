@@ -579,16 +579,23 @@ namespace OpenBabel
   {
     const SpaceGroup *sg = GetSpaceGroup(); // the actual space group and transformations for this unit cell
 
-    // For each atom, we loop through: convert the coords back to inverse space, apply the transformations and create new atoms
+    // For each atom, we loop through: convert the orthonormal to fractionnal coordinates, apply the transformations and create new atoms
     vector3 uniqueV, newV, updatedCoordinate;
     list<vector3> transformedVectors; // list of symmetry-defined copies of the atom
     list<vector3>::iterator transformIterator, duplicateIterator;
     OBAtom *newAtom;
     list<OBAtom*> atoms; // keep the current list of unique atoms -- don't double-create
     list<vector3> coordinates; // all coordinates to prevent duplicates
+    map<OBAtom*,list<OBAtom*> > newatoms;// keep track of all atoms generated, to add bonds later
     bool foundDuplicate;
-    FOR_ATOMS_OF_MOL(atom, *mol)
+    FOR_ATOMS_OF_MOL(atom, *mol){
       atoms.push_back(&(*atom));
+      newatoms[&(*atom)].push_back(&(*atom));
+    }
+    // keep original list of bonds and lengths
+    map<OBBond*,double> bonds;
+    FOR_BONDS_OF_MOL(bond, *mol)
+      bonds[&(*bond)]=bond->GetLength();
 
     list<OBAtom*>::iterator i;
     for (i = atoms.begin(); i != atoms.end(); ++i) {
@@ -600,7 +607,7 @@ namespace OpenBabel
       transformedVectors = sg->Transform(uniqueV);
       for (transformIterator = transformedVectors.begin();
            transformIterator != transformedVectors.end(); ++transformIterator) {
-        // coordinates are in reciprocal space -- check if it's in the unit cell
+        // using fractionnal coordinates -- check if it's in the unit cell
         // if not, transform it in place
         updatedCoordinate = WrapFractionalCoordinate(*transformIterator);
         foundDuplicate = false;
@@ -620,9 +627,34 @@ namespace OpenBabel
         newAtom = mol->NewAtom();
         newAtom->Duplicate(*i);
         newAtom->SetVector(FractionalToCartesian(updatedCoordinate));
+        newatoms[*i].push_back(&(*newAtom));
       } // end loop of transformed atoms
-      (*i)->SetVector(FractionalToCartesian(uniqueV)); // move the atom back into the unit cell
+      (*i)->SetVector(FractionalToCartesian(uniqueV)); // Change back to orthonormal coordinates
     } // end loop of atoms
+    
+    // Generate bonds from existing ones
+    double EPS=1e-3;
+    map<OBBond*,double>::iterator b;
+    for (b = bonds.begin(); b != bonds.end(); ++b) {
+      OBAtom *a1=b->first->GetBeginAtom();
+      OBAtom *a2=b->first->GetEndAtom();
+      const double l=b->second;
+      if(a1->GetIdx()<a2->GetIdx()) continue;
+      vector3 v1,v;
+      for(list<OBAtom*>::iterator b1=newatoms[a1].begin();b1!=newatoms[a1].end();b1++){
+        v1=(*b1)->GetVector();
+        for(list<OBAtom*>::iterator b2=newatoms[a2].begin();b2!=newatoms[a2].end();b2++){
+          if(mol->GetBond(*b1, *b2)!=NULL)
+             continue;//bond already exists
+          double l2=(v1-(*b2)->GetVector()).length();
+          if(fabs(l2-l)<EPS)
+             mol->AddBond((*b1)->GetIdx(),(*b2)->GetIdx(),b->first->GetBondOrder(),b->first->GetFlags());
+        }
+      }
+    }
+    // Remove original bonds for which the length has changed
+    for (b = bonds.begin(); b != bonds.end(); ++b)
+      if(fabs(b->first->GetLength()-b->second)>EPS) mol->DeleteBond(b->first);
 
     SetSpaceGroup(1); // We've now applied the symmetry, so we should act like a P1 unit cell
   }
